@@ -663,7 +663,7 @@ public class NetworkClient implements KafkaClient {
         int inflight = Integer.MAX_VALUE;
 
         Node foundConnecting = null;
-        Node foundCanConnect = null;
+        boolean foundCanConnect = false;
         Node foundReady = null;
 
         int offset = this.randOffset.nextInt(nodes.size());
@@ -684,7 +684,7 @@ public class NetworkClient implements KafkaClient {
             } else if (connectionStates.isPreparingConnection(node.idString())) {
                 foundConnecting = node;
             } else if (canConnect(node, now)) {
-                foundCanConnect = node;
+                foundCanConnect = true;
             } else {
                 log.trace("Removing node {} from least loaded node selection since it is neither ready " +
                         "for sending or connecting", node);
@@ -699,9 +699,10 @@ public class NetworkClient implements KafkaClient {
         } else if (foundConnecting != null) {
             log.trace("Found least loaded connecting node {}", foundConnecting);
             return foundConnecting;
-        } else if (foundCanConnect != null) {
-            log.trace("Found least loaded node {} with no active connection", foundCanConnect);
-            return foundCanConnect;
+        } else if (foundCanConnect) {
+            Node nodeCanConnect = nodes.get(connectionStates.nextNodeIdx(nodes.size()));
+            log.trace("Found least loaded node {} with no active connection", nodeCanConnect);
+            return nodeCanConnect;
         } else {
             log.trace("Least loaded node selection failed to find an available node");
             return null;

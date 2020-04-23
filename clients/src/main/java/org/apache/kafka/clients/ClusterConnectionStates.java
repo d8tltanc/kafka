@@ -40,6 +40,7 @@ final class ClusterConnectionStates {
     private final double reconnectBackoffMaxExp;
     private final Map<String, NodeConnectionState> nodeState;
     private final Logger log;
+    private int nextNodeIdx = -1;
 
     public ClusterConnectionStates(long reconnectBackoffMs, long reconnectBackoffMaxMs, LogContext logContext) {
         this.log = logContext.logger(ClusterConnectionStates.class);
@@ -355,6 +356,15 @@ final class ClusterConnectionStates {
         if (state == null)
             throw new IllegalStateException("No entry found for connection " + id);
         return state;
+    }
+
+    /**
+     * Help the client make the round robin node selection
+     * Return the index of the next node we should consider
+     * @param nodeSize the number of nodes in the cluster
+     */
+    public synchronized int nextNodeIdx(int nodeSize) {
+        return (this.nextNodeIdx++) % nodeSize;
     }
 
     /**
