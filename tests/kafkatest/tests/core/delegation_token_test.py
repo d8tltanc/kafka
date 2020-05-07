@@ -35,7 +35,6 @@ class DelegationTokenTest(Test):
         self.topic = "topic"
         self.zk = ZookeeperService(test_context, num_nodes=1)
         self.kafka = KafkaService(self.test_context, num_nodes=1, zk=self.zk, zk_chroot="/kafka",
-                                  security_protocol = "SSL",
                                   topics={self.topic: {"partitions": 1, "replication-factor": 1}},
                                   server_prop_overides=[
                                       [config_property.DELEGATION_TOKEN_MAX_LIFETIME_MS, "604800000"],
@@ -47,7 +46,7 @@ class DelegationTokenTest(Test):
         self.jaas_deleg_conf = ""
         self.client_properties_content = """
 security.protocol=SASL_PLAINTEXT
-sasl.mechanism=SCRAM-SHA-256
+sasl.mechanism=GSSAPI
 sasl.kerberos.service.name=kafka
 client.id=console-consumer
 """
@@ -62,7 +61,7 @@ client.id=console-consumer
                                         client_prop_file_override=self.client_properties_content)
 
         self.kafka.security_protocol = 'SASL_PLAINTEXT'
-        self.kafka.client_sasl_mechanism = 'GSSAPI,SCRAM-SHA-256'
+        self.kafka.client_sasl_mechanism = 'GSSAPI'
         self.kafka.interbroker_sasl_mechanism = 'GSSAPI'
 
 
@@ -79,7 +78,7 @@ client.id=console-consumer
         self.jaas_deleg_conf = self.delegation_tokens.create_jaas_conf_with_delegation_token()
 
     def expire_delegation_token(self):
-        self.kafka.client_sasl_mechanism = 'GSSAPI,SCRAM-SHA-256'
+        self.kafka.client_sasl_mechanism = 'GSSAPI'
         token_hmac = self.delegation_tokens.token_hmac()
         self.delegation_tokens.expire_delegation_token(token_hmac)
 
