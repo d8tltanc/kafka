@@ -131,8 +131,8 @@ class AclAuthorizer extends Authorizer with Logging {
   @volatile
   private var aclCache = new scala.collection.immutable.TreeMap[ResourcePattern, VersionedAcls]()(new ResourceOrdering)
 
-  private val resourceCache = new scala.collection.mutable.HashMap[AccessControlEntry,
-    scala.collection.mutable.HashSet[ResourcePattern]]()
+  private val prefixedResourceCache = new mutable.HashMap[ResourceIndex, mutable.TreeSet[String]]()
+  private val literalResourceCache = new mutable.HashMap[ResourceIndex, mutable.HashSet[String]]()
 
   private val lock = new Object()
 
@@ -319,22 +319,29 @@ class AclAuthorizer extends Authorizer with Logging {
     val principal = new KafkaPrincipal(
       requestContext.principal().getPrincipalType,
       requestContext.principal().getName).toString
+    val host = requestContext.clientAddress().getHostAddress
+    val action = new Action(op, new ResourcePattern(
+      resourceType, "NONE", PatternType.UNKNOWN), 0, true, true)
 
-    val allowPatterns = mutable.Set[ResourcePattern]()
-    val denyLiterals = mutable.HashSet[String]()
-    val denyPrefixes = mutable.HashSet[String]()
-    val action = new Action(op, new ResourcePattern(resourceType, "NONE", PatternType.UNKNOWN), 0, true, true)
+    val denyLiterals = matchingResources(
+      principal, host, op, AclPermissionType.DENY, resourceType, PatternType.LITERAL)
 
-    if (processPatternsAndCanDenyAll(principal, requestContext.clientAddress().getHostAddress, op, resourceType,
-        allowPatterns, denyLiterals, denyPrefixes)) {
+    if (denyAll(denyLiterals)) {
       logAuditMessage(requestContext, action, false)
-      return AuthorizationResult.DENIED
+      AuthorizationResult.DENIED
     }
 
     if (shouldAllowEveryoneIfNoAclIsFound) {
       logAuditMessage(requestContext, action, true)
       return AuthorizationResult.ALLOWED
     }
+
+    val denyPrefixes = matchingResources(
+      principal, host, op, AclPermissionType.DENY, resourceType, PatternType.PREFIXED)
+    val allowLiterals = matchingResources(
+      principal, host, op, AclPermissionType.ALLOW, resourceType, PatternType.LITERAL)
+    val allowPrefixes = matchingResources(
+      principal, host, op, AclPermissionType.ALLOW, resourceType, PatternType.LITERAL)
 
     if (allowAny(allowPatterns, denyLiterals, denyPrefixes)) {
       logAuditMessage(requestContext, action, true)
@@ -345,43 +352,54 @@ class AclAuthorizer extends Authorizer with Logging {
     AuthorizationResult.DENIED
   }
 
-  def processPatternsAndCanDenyAll(principal: String, host: String, op: AclOperation, resourceType: ResourceType,
-                      allowPatterns: mutable.Set[ResourcePattern], denyLiterals: mutable.Set[String],
-                      denyPrefixes: mutable.Set[String]): Boolean = {
+  def matchingResources(principal: String, host: String, op: AclOperation, permissionType: AclPermissionType,
+                        resourceType: ResourceType, patternType: PatternType): Seq[mutable.HashSet[String]] = {
+    var matched = Seq()
     for (p <- Set(principal, AclEntry.WildcardPrincipal.toString)) {
       for (h <- Set(host, AclEntry.WildcardHost)) {
         for (o <- Set(op, AclOperation.ALL)) {
-          val allowAce = new AccessControlEntry(p, h, o, AclPermissionType.ALLOW)
-          resourceCache.get(allowAce) match {
-            case Some(patterns) => allowPatterns.addAll(patterns.filter(p => p.resourceType() == resourceType))
-            case None =>
+          val ace = new AccessControlEntry(p, h, o, permissionType)
+          val resourceIndex = new ResourceIndex(ace, resourceType)
+
+
+          val resources = patternType match {
+            case PatternType.LITERAL =>
+              literalResourceCache.get(resourceIndex)
+            case PatternType.PREFIXED =>
+              prefixedResourceCache.get(resourceIndex)
           }
-          val denyAce = new AccessControlEntry(p, h, o, AclPermissionType.DENY)
-          resourceCache.get(denyAce) match {
-            case Some(patterns) => patterns.filter(p => p.resourceType() == resourceType).foreach(p => {
-              if (SecurityUtils.canDenyAll(p)) {
-                return true
-              }
-              p.patternType() match {
-                case PatternType.LITERAL => denyLiterals.add(p.name())
-                case PatternType.PREFIXED => denyPrefixes.add(p.name())
-                case _ =>
-              }
-            })
-            case None =>
+
+          matched = resources match {
+            case Some(resources) => matched :+ resources
+            case None => matched
           }
         }
       }
     }
-    false
+    matched
   }
 
-  private def allowAny(allowPatterns: mutable.Set[ResourcePattern],
-                       denyLiterals: mutable.Set[String], denyPrefixes: mutable.Set[String]): Boolean =
-    allowPatterns.exists(pattern => allow(pattern, denyLiterals, denyPrefixes))
+  def denyAll(denyLiterals: Seq[mutable.HashSet[String]]): Boolean = {
+    denyLiterals.exists(denyStrings => {
+      denyStrings.contains(ResourcePattern.WILDCARD_RESOURCE)
+    })
+  }
 
-  private def allow(allowPattern: ResourcePattern,
-                    denyLiterals: mutable.Set[String], denyPrefixes: mutable.Set[String]): Boolean = {
+  private def allowAny(allowLiterals: mutable.Set[String],
+                       allowPrefixes: mutable.Set[String],
+                       denyLiterals: mutable.Set[String],
+                       denyPrefixes: mutable.TreeSet[String]): Boolean =
+    (allowPrefixes.exists(prefix => allow(prefix, denyLiterals, denyPrefixes))
+      || allowLiterals.exists(literal => allowLiteral(literal, denyLiterals, denyPrefixes)))
+
+  private def allowLiteral(allowLiteral: String,
+                           denyLiterals: mutable.Set[String],
+                           denyPrefixes: mutable.TreeSet[String]): Boolean = {
+    allowLiteral match {
+      case ResourcePattern.WILDCARD_RESOURCE => true
+      case _ => !denyLiterals.contains(allowLiteral) &&
+    }
+
     (allowPattern.patternType(), allowPattern.name()) match {
       case (PatternType.LITERAL, ResourcePattern.WILDCARD_RESOURCE) => return true
       case (PatternType.LITERAL, _) =>
@@ -390,14 +408,11 @@ class AclAuthorizer extends Authorizer with Logging {
         }
       case (_, _) =>
     }
-    val sb = new StringBuilder
-    for (ch <- allowPattern.name().toCharArray) {
-      sb.append(ch)
-      if (denyPrefixes.contains(sb.toString())) {
-        return false
-      }
+
+    denyPrefixes.minAfter(allowPattern.name().substring(0, 1)) match {
+      case Some(str: String) => !allowPattern.name().startsWith(str)
+      case None => true
     }
-    true
   }
 
   private def authorizeAction(requestContext: AuthorizableRequestContext, action: Action): AuthorizationResult = {
@@ -653,19 +668,35 @@ class AclAuthorizer extends Authorizer with Logging {
     val acesToRemove = currentAces.diff(newAces)
 
     acesToAdd.foreach(ace => {
-      resourceCache.get(ace) match {
-        case Some(resources) => resources.add(resource)
-        case None => resourceCache.put(ace, scala.collection.mutable.HashSet(resource))
+      val resourceIndex = new ResourceIndex(ace, resource.resourceType())
+
+      resource.patternType() match {
+        case PatternType.LITERAL =>
+          literalResourceCache.get(resourceIndex) match {
+            case Some(resources) => resources.add(resource.name())
+            case None => literalResourceCache.put(resourceIndex, mutable.HashSet(resource))
+          }
+        case PatternType.PREFIXED =>
+          prefixedResourceCache.get(resourceIndex) match {
+            case Some(resources) => resources.add(resource.name())
+            case None => prefixedResourceCache.put(resourceIndex, mutable.TreeSet(resource))
+          }
       }
     })
     acesToRemove.foreach(ace => {
-      resourceCache.get(ace) match {
-        case Some(resources) =>
-          resources.remove(resource)
-          if (resources.isEmpty) {
-            resourceCache.remove(ace)
+      val resourceIndex = new ResourceIndex(ace, resource.resourceType())
+
+      resource.patternType() match {
+        case PatternType.LITERAL =>
+          literalResourceCache.get(resourceIndex) match {
+            case Some(resources) => resources.remove(resource.name())
+            case None =>
           }
-        case None =>
+        case PatternType.PREFIXED =>
+          prefixedResourceCache.get(resourceIndex) match {
+            case Some(resources) => resources.remove(resource.name())
+            case None =>
+          }
       }
     })
 
