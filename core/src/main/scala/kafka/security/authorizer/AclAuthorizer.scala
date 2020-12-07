@@ -547,7 +547,7 @@ class AclAuthorizer extends Authorizer with Logging {
     zkClient.getVersionedAclsForResource(resource)
   }
 
-  private def updateCache(resource: ResourcePattern, versionedAcls: VersionedAcls): Unit = {
+  def updateCache(resource: ResourcePattern, versionedAcls: VersionedAcls): Unit = {
     if (versionedAcls.acls.nonEmpty) {
       aclCache = aclCache.updated(resource, versionedAcls)
     } else {
