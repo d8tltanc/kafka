@@ -91,8 +91,8 @@ public class AclAuthorizerBenchmark {
     private String authorizeByResourceTypeHostName = "127.0.0.2";
 
     private TreeMap<ResourcePattern, VersionedAcls> aclCache = new TreeMap<>(new AclAuthorizer.ResourceOrdering());
-    private scala.collection.mutable.HashMap<ResourceIndex, scala.collection.mutable.HashSet<String>> resourceCache =
-        new scala.collection.mutable.HashMap<>();
+    private scala.collection.immutable.HashMap<ResourceIndex, scala.collection.immutable.HashSet<String>> resourceCache =
+        new scala.collection.immutable.HashMap<>();
     private HashMap<ResourcePattern, AclAuthorizer.VersionedAcls> aclToUpdate = new HashMap<>();
 
     Random rand = new Random(System.currentTimeMillis());
@@ -198,9 +198,14 @@ public class AclAuthorizerBenchmark {
                 ResourcePattern resource = entryMap.getKey();
                 ResourceIndex resourceIndex = new ResourceIndex(
                     entry.ace(), resource.resourceType(), resource.patternType());
-                scala.collection.mutable.HashSet<String> resources = resourceCache.getOrElseUpdate(
-                    resourceIndex, scala.collection.mutable.HashSet::new);
-                resources.add(resource.name());
+                scala.collection.immutable.HashSet<String> resources;
+                if (resourceCache.get(resourceIndex).isDefined()) {
+                    resources = resourceCache.get(resourceIndex).get();
+                } else {
+                    resources = new scala.collection.immutable.HashSet<>();
+                }
+                resources = resources.incl(resource.name());
+                resourceCache = resourceCache.updated(resourceIndex, resources);
             }
         }
     }
